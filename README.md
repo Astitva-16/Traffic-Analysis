@@ -57,8 +57,6 @@ NOMINATIM_URL=https://nominatim.openstreetmap.org/search
 OSRM_URL=https://router.project-osrm.org
 ```
 
-Do not commit `.env`.
-
 ## 2. Build the C++ engine
 
 ### Windows
