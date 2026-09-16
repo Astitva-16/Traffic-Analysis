@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+npm-debug.log*
+dist/
+build/
+.DS_Store
+Thumbs.db
+cpp-engine/traffic_engine
+cpp-engine/traffic_engine.exe

@@ -1,0 +1,12 @@
+import { Router } from 'express';
+import { listSegments, history, queryRange, summary, bottlenecks, placeSearch, routesByPlaces, ingest } from '../controllers/trafficController.js';
+const r = Router();
+r.get('/segments', listSegments);
+r.get('/segments/:id/history', history);
+r.get('/segments/:id/query', queryRange);
+r.get('/traffic/summary', summary);
+r.get('/traffic/bottlenecks', bottlenecks);
+r.get('/places/search', placeSearch);
+r.post('/routes/places', routesByPlaces);
+r.post('/sensors/events', ingest);
+export default r;
