@@ -71,154 +71,167 @@ export async function searchPlaces(query) {
 
 async function osrmRoute(origin, destination) {
   const coords = `${origin.lon},${origin.lat};${destination.lon},${destination.lat}`;
-  const url = `${OSRM}/route/v1/driving/${coords}?alternatives=3&overview=full&geometries=geojson&steps=false`;
+  const url = `${OSRM}/route/v1/driving/${coords}?alternatives=true&overview=full&geometries=geojson&steps=true`;
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
     if (response.ok) {
       const data = await response.json();
-      if (data.code === 'Ok' && data.routes?.length) {
+      if (data.code === 'Ok' && Array.isArray(data.routes) && data.routes.length > 0) {
         return data.routes;
       }
     }
-  } catch {
-    // fallback
+  } catch (err) {
+    console.warn('[Routing API] OSRM fetch error:', err.message);
   }
   return [];
 }
 
-function generatePathVariation(origin, destination, curvatureX, curvatureY, numPoints = 16) {
-  const coords = [];
-  const dLat = destination.lat - origin.lat;
-  const dLon = destination.lon - origin.lon;
-
-  for (let i = 0; i <= numPoints; i++) {
-    const t = i / numPoints;
-    const arc = Math.sin(t * Math.PI);
-    const lat = origin.lat + dLat * t + curvatureY * arc;
-    const lon = origin.lon + dLon * t + curvatureX * arc;
-    coords.push([lat, lon]);
+function extractRouteName(route, index) {
+  const summary = route.legs?.[0]?.summary?.trim();
+  if (summary && summary.length > 2) {
+    return 'Via ' + summary.split(',').map(s => s.trim()).filter(Boolean).join(' & ');
   }
-  return coords;
+
+  const steps = route.legs?.[0]?.steps || [];
+  const roadNames = [...new Set(
+    steps
+      .map(s => s.name?.trim())
+      .filter(n => n && n.length > 1 && !/unnamed/i.test(n))
+  )];
+
+  if (roadNames.length > 0) {
+    return 'Via ' + roadNames.slice(0, 3).join(' & ');
+  }
+
+  return `Route Corridor ${index + 1}`;
 }
 
-function buildRouteSegments(routeGeometry, baseSpeedLimit, congestionLevel) {
-  const numCheckpoints = Math.min(18, Math.max(10, routeGeometry.length));
-  const step = Math.max(1, Math.floor(routeGeometry.length / numCheckpoints));
+function extractRouteSegments(route) {
+  const steps = route.legs?.[0]?.steps || [];
   const segments = [];
-
   let cumDist = 0;
-  for (let i = 0; i < routeGeometry.length; i += step) {
-    const pt = routeGeometry[i];
-    const prevPt = segments.length ? routeGeometry[Math.max(0, i - step)] : pt;
-    const segDist = Math.sqrt(
-      ((pt[0] - prevPt[0]) * 111) ** 2 + ((pt[1] - prevPt[1]) * 85) ** 2
-    );
-    cumDist += segDist;
 
-    const wave = 0.35 + 0.45 * Math.sin((i / routeGeometry.length) * Math.PI * 2.5);
-    const segCongestion = Math.min(95, Math.max(10, Math.round(congestionLevel * 0.7 + wave * 40)));
-    const segSpeed = Math.max(12, Math.round(baseSpeedLimit * (1.0 - (segCongestion / 100) * 0.65)));
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const distKm = (step.distance || 0) / 1000;
+    // Skip negligible zero-distance maneuvers except at ends
+    if (distKm <= 0.02 && i > 0 && i < steps.length - 1) continue;
+    cumDist += distKm;
+
+    const speed = step.duration > 0
+      ? Math.min(85, Math.max(12, Math.round((step.distance / step.duration) * 3.6)))
+      : 35;
+
+    const rawName = step.name?.trim();
+    const road = (rawName && rawName.length > 1 && !/unnamed/i.test(rawName))
+      ? rawName
+      : (segments.length ? `Section ${segments.length + 1}` : 'Departure Link');
+
+    const loc = step.maneuver?.location || [0, 0];
+    const cong = Math.min(92, Math.max(12, Math.round(Math.max(0, 50 - speed) * 2.0 + 18)));
 
     segments.push({
       checkpointId: `CP-${segments.length + 1}`,
-      name: `Checkpoint ${segments.length + 1}`,
-      lat: pt[0],
-      lon: pt[1],
+      name: `${road} (${cumDist.toFixed(1)} km)`,
+      roadName: road,
+      lat: loc[1],
+      lon: loc[0],
       distanceKm: Number(cumDist.toFixed(2)),
-      speed: segSpeed,
-      congestion: segCongestion
+      speed,
+      congestion: cong
     });
   }
+
+  // If steps were very short or few, sample points along geometry for a rich Segment Tree graph
+  if (segments.length < 5 && route.geometry?.coordinates?.length >= 5) {
+    const coords = route.geometry.coordinates;
+    const totalDist = (route.distance || 1000) / 1000;
+    const totalDuration = (route.duration || 60);
+    const avgSpeed = totalDuration > 0 ? Math.round((route.distance / totalDuration) * 3.6) : 35;
+    const count = Math.min(14, coords.length);
+    const stepIdx = Math.max(1, Math.floor(coords.length / count));
+    const sampled = [];
+
+    for (let i = 0; i < coords.length; i += stepIdx) {
+      const t = i / coords.length;
+      const sampledDist = Number((totalDist * t).toFixed(2));
+      const variation = Math.round(Math.sin(t * Math.PI * 2.5) * 8);
+      const segSpeed = Math.max(14, Math.min(80, avgSpeed + variation));
+      const segCong = Math.min(90, Math.max(15, Math.round((1 - segSpeed / 65) * 75)));
+
+      sampled.push({
+        checkpointId: `CP-${sampled.length + 1}`,
+        name: `Road Waypoint ${sampled.length + 1} (${sampledDist} km)`,
+        roadName: route.legs?.[0]?.summary || 'Route Waypoint',
+        lat: coords[i][1],
+        lon: coords[i][0],
+        distanceKm: sampledDist,
+        speed: segSpeed,
+        congestion: segCong
+      });
+    }
+    return sampled;
+  }
+
   return segments;
 }
 
 export async function getCandidateRoutes(origin, destination) {
   const osrmRoutes = await osrmRoute(origin, destination);
 
+  if (osrmRoutes.length > 0) {
+    return osrmRoutes.map((r, index) => {
+      const name = extractRouteName(r, index);
+      const distKm = Number((r.distance / 1000).toFixed(2));
+      const minutes = Number((r.duration / 60).toFixed(1));
+      const coords = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+      const segments = extractRouteSegments(r);
+
+      const avgSpeed = segments.length
+        ? Math.round(segments.reduce((a, b) => a + b.speed, 0) / segments.length)
+        : Math.round((distKm / (minutes / 60)));
+
+      const avgCong = segments.length
+        ? Math.round(segments.reduce((a, b) => a + b.congestion, 0) / segments.length)
+        : 30;
+
+      return {
+        id: `route-${index + 1}`,
+        name,
+        distanceKm: distKm,
+        estimatedMinutes: minutes,
+        congestion: avgCong,
+        averageSpeed: avgSpeed,
+        geometry: coords,
+        segments
+      };
+    });
+  }
+
+  // Fallback if routing server is completely offline
   const dLat = destination.lat - origin.lat;
   const dLon = destination.lon - origin.lon;
-  const straightDistKm = Math.max(1.5, Math.sqrt((dLat * 111) ** 2 + (dLon * 85) ** 2));
+  const distKm = Math.max(1.5, Math.sqrt((dLat * 111) ** 2 + (dLon * 85) ** 2));
+  const baseMin = Number(((distKm / 40) * 60).toFixed(1));
 
-  const routeConfigs = [
+  return [
     {
       id: 'route-1',
-      name: 'Primary Arterial Expressway',
-      curveX: 0.015,
-      curveY: -0.012,
-      distFactor: 1.05,
-      speedLimit: 65,
-      baseCongestion: 32
-    },
-    {
-      id: 'route-2',
-      name: 'Outer Ring Bypass Highway',
-      curveX: -0.035,
-      curveY: 0.025,
-      distFactor: 1.22,
-      speedLimit: 75,
-      baseCongestion: 22
-    },
-    {
-      id: 'route-3',
-      name: 'Central Metro Transit Corridor',
-      curveX: 0.005,
-      curveY: 0.005,
-      distFactor: 1.02,
-      speedLimit: 50,
-      baseCongestion: 58
-    },
-    {
-      id: 'route-4',
-      name: 'Elevated Connector Linkway',
-      curveX: 0.028,
-      curveY: 0.032,
-      distFactor: 1.15,
-      speedLimit: 70,
-      baseCongestion: 38
-    },
-    {
-      id: 'route-5',
-      name: 'Suburban Boulevard Corridor',
-      curveX: -0.020,
-      curveY: -0.028,
-      distFactor: 1.18,
-      speedLimit: 55,
-      baseCongestion: 45
+      name: 'Via Main Arterial Road',
+      distanceKm: Number(distKm.toFixed(2)),
+      estimatedMinutes: baseMin,
+      congestion: 28,
+      averageSpeed: 42,
+      geometry: [
+        [origin.lat, origin.lon],
+        [origin.lat + dLat * 0.5, origin.lon + dLon * 0.5],
+        [destination.lat, destination.lon]
+      ],
+      segments: [
+        { checkpointId: 'CP-1', name: 'Starting Avenue', roadName: 'Starting Avenue', lat: origin.lat, lon: origin.lon, distanceKm: 0.5, speed: 45, congestion: 20 },
+        { checkpointId: 'CP-2', name: 'Central Flyway', roadName: 'Central Flyway', lat: origin.lat + dLat * 0.5, lon: origin.lon + dLon * 0.5, distanceKm: Number((distKm * 0.6).toFixed(1)), speed: 40, congestion: 30 },
+        { checkpointId: 'CP-3', name: 'Destination Approach', roadName: 'Destination Approach', lat: destination.lat, lon: destination.lon, distanceKm: Number(distKm.toFixed(1)), speed: 38, congestion: 35 }
+      ]
     }
   ];
-
-  return routeConfigs.map((cfg, index) => {
-    let geometry = [];
-    let distanceKm = straightDistKm * cfg.distFactor;
-    let baseMinutes = 0;
-
-    if (osrmRoutes[index] && osrmRoutes[index].geometry?.coordinates?.length) {
-      geometry = osrmRoutes[index].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
-      distanceKm = osrmRoutes[index].distance / 1000;
-      baseMinutes = osrmRoutes[index].duration / 60;
-    } else {
-      geometry = generatePathVariation(origin, destination, cfg.curveX, cfg.curveY, 20);
-      baseMinutes = (distanceKm / cfg.speedLimit) * 60;
-    }
-
-    const congestion = cfg.baseCongestion + Math.round((Math.random() - 0.5) * 8);
-    const trafficDelayMultiplier = 1.0 + (congestion / 100) * 0.75;
-    const estimatedMinutes = Number((baseMinutes * trafficDelayMultiplier).toFixed(1));
-
-    const segments = buildRouteSegments(geometry, cfg.speedLimit, congestion);
-    const speeds = segments.map(s => s.speed);
-    const avgSpeed = Number((speeds.reduce((a, b) => a + b, 0) / speeds.length).toFixed(1));
-
-    return {
-      id: cfg.id,
-      name: cfg.name,
-      distanceKm: Number(distanceKm.toFixed(1)),
-      baseMinutes: Number(baseMinutes.toFixed(1)),
-      estimatedMinutes,
-      congestion: Math.round(congestion),
-      averageSpeed: avgSpeed,
-      geometry,
-      segments
-    };
-  });
 }

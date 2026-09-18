@@ -93,7 +93,7 @@ export default function Dashboard() {
 
   // Segment Tree Range Query State
   const [rangeFrom, setRangeFrom] = useState(0);
-  const [rangeTo, setRangeTo] = useState(10);
+  const [rangeTo, setRangeTo] = useState(5);
   const [analysis, setAnalysis] = useState(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
 
@@ -113,8 +113,12 @@ export default function Dashboard() {
         const top = rankedRoutes[0];
         setSelectedRoute(top);
         setRangeFrom(0);
-        setRangeTo(Math.max(0, (top.segments?.length || 1) - 1));
-        runSegmentTreeAnalysis(top, 0, Math.max(0, (top.segments?.length || 1) - 1));
+        const maxIdx = Math.max(0, (top.segments?.length || 1) - 1);
+        setRangeTo(maxIdx);
+        runSegmentTreeAnalysis(top, 0, maxIdx);
+      } else {
+        setSelectedRoute(null);
+        setErrorMsg('No drivable route found between these places.');
       }
     } catch (err) {
       setErrorMsg(err.response?.data?.message || 'Failed to calculate routes.');
@@ -160,6 +164,7 @@ export default function Dashboard() {
   const chartData = (selectedRoute?.segments || []).map((s, idx) => ({
     checkpoint: `CP-${idx + 1}`,
     name: s.name,
+    roadName: s.roadName || s.name,
     speed: s.speed,
     distanceKm: s.distanceKm,
     congestion: s.congestion
@@ -170,7 +175,7 @@ export default function Dashboard() {
       <header className="topbar">
         <div>
           <h1>Traffic Route Engine</h1>
-          <p>Top 5 Fastest Routes (C++ Heap Ranked) &amp; Segment Tree Profile Analysis</p>
+          <p>Real-time Road Routing (OSRM API) &middot; C++ Min-Heap Ranking &middot; Segment Tree Profile</p>
         </div>
         <div className="live"><span /> C++ ENGINE ACTIVE</div>
       </header>
@@ -180,7 +185,7 @@ export default function Dashboard() {
         <section className="stats">
           <Card
             title="Selected Route"
-            value={selectedRoute ? `#${selectedRoute.rank} ${selectedRoute.name.split(' ')[0]}` : '—'}
+            value={selectedRoute ? `#${selectedRoute.rank} ${selectedRoute.name.replace(/^Via\s+/i, '')}` : '—'}
           />
           <Card
             title="Fastest ETA"
@@ -200,8 +205,8 @@ export default function Dashboard() {
         <section className="panel planner">
           <div className="section-heading">
             <div>
-              <h2>Find Top 5 Routes Between Two Locations</h2>
-              <p>Type any two locations. The C++ Heap algorithm will evaluate and rank the 5 best routes in real time.</p>
+              <h2>Find Real Routes Between Two Locations</h2>
+              <p>Type any two locations. Real road corridors from the map API will be evaluated and ranked via C++ Min-Heap.</p>
             </div>
           </div>
           <div className="planner-grid">
@@ -214,20 +219,20 @@ export default function Dashboard() {
                 onClick={calculateRoutes}
                 disabled={loading}
               >
-                {loading ? 'Evaluating…' : 'Calculate Top 5 Routes'}
+                {loading ? 'Evaluating…' : 'Find Best Routes'}
               </button>
               {errorMsg && <small className="form-message">{errorMsg}</small>}
             </div>
           </div>
         </section>
 
-        {/* Map and Top 5 Heap Ranked Routes */}
+        {/* Map and Ranked Routes */}
         <section className="grid main-grid">
           <div className="panel map-panel">
             <div className="panel-title">
               <div>
-                <h2>Calculated Routes Map</h2>
-                <p>Blue: Selected Path · Grey: Alternative Candidates · Green: Origin · Red: Destination</p>
+                <h2>Real-Road Telemetry Map</h2>
+                <p>Blue: Selected Path &middot; Dashed: Alternative Corridors &middot; Green: Origin &middot; Red: Destination</p>
               </div>
             </div>
             <div className="mapbox">
@@ -244,8 +249,8 @@ export default function Dashboard() {
           <div className="panel">
             <div className="panel-title">
               <div>
-                <h2>Top 5 Fastest Routes (C++ Heap)</h2>
-                <p>Ranked from fastest to slowest via C++ Min-Heap algorithm</p>
+                <h2>Available Routes ({routes.length} Paths &middot; C++ Heap)</h2>
+                <p>Real road corridors ranked from fastest to slowest via C++ Min-Heap</p>
               </div>
             </div>
             <div className="bottleneck-list">
@@ -266,14 +271,14 @@ export default function Dashboard() {
                       </div>
                       <strong className={congClass}>{r.estimatedMinutes} min</strong>
                       <small>
-                        {r.distanceKm} km · {r.averageSpeed} km/h avg · {r.congestion}% congestion
+                        {r.distanceKm} km &middot; {r.averageSpeed} km/h avg &middot; {r.congestion}% congestion
                       </small>
                     </button>
                   );
                 })
               ) : (
                 <div className="empty">
-                  {loading ? 'Evaluating routes via C++ Heap…' : 'Search two locations above to generate routes.'}
+                  {loading ? 'Evaluating real routes via C++ Heap…' : 'Search two locations above to generate routes.'}
                 </div>
               )}
             </div>
@@ -285,11 +290,11 @@ export default function Dashboard() {
           <div className="panel">
             <div className="panel-title">
               <div>
-                <h2>Selected Route Speed Profile (C++ Segment Tree)</h2>
+                <h2>Road Speed Profile (C++ Segment Tree)</h2>
                 <p>
                   {selectedRoute
-                    ? `Showing checkpoint speeds for #${selectedRoute.rank} ${selectedRoute.name}`
-                    : 'Select a route from the Top 5 list above'}
+                    ? `Speeds along #${selectedRoute.rank} ${selectedRoute.name}`
+                    : 'Select a route from the list above'}
                 </p>
               </div>
             </div>
@@ -306,7 +311,7 @@ export default function Dashboard() {
                           formatter={(value) => [`${value} km/h`, 'Speed']}
                           labelFormatter={(lbl, items) => {
                             const item = items?.[0]?.payload;
-                            return item ? `${item.name} (${item.distanceKm} km)` : lbl;
+                            return item ? `${item.name}` : lbl;
                           }}
                         />
                         <Line type="monotone" dataKey="speed" stroke="#2563eb" strokeWidth={2.5} dot={{ r: 3 }} />
@@ -327,7 +332,7 @@ export default function Dashboard() {
                     >
                       {chartData.map((c, i) => (
                         <option key={i} value={i}>
-                          {c.checkpoint} ({c.distanceKm} km)
+                          {c.checkpoint}: {c.roadName} ({c.distanceKm} km)
                         </option>
                       ))}
                     </select>
@@ -341,7 +346,7 @@ export default function Dashboard() {
                     >
                       {chartData.map((c, i) => (
                         <option key={i} value={i} disabled={i < rangeFrom}>
-                          {c.checkpoint} ({c.distanceKm} km)
+                          {c.checkpoint}: {c.roadName} ({c.distanceKm} km)
                         </option>
                       ))}
                     </select>
@@ -391,7 +396,7 @@ export default function Dashboard() {
                 </div>
 
                 <div className="alternatives">
-                  <h3>All 5 Evaluated Routes</h3>
+                  <h3>All Evaluated Routes ({routes.length})</h3>
                   {routes.map(r => (
                     <div
                       className={`option ${selectedRoute.id === r.id ? 'active' : ''}`}
@@ -399,11 +404,11 @@ export default function Dashboard() {
                       onClick={() => handleSelectRoute(r)}
                     >
                       <span>
-                        #{r.rank} {r.name.split(' ').slice(0, 3).join(' ')}
+                        #{r.rank} {r.name}
                       </span>
                       <b>{r.estimatedMinutes} min</b>
                       <small>
-                        {r.distanceKm} km · {r.congestion}% congestion
+                        {r.distanceKm} km &middot; {r.congestion}% congestion
                       </small>
                     </div>
                   ))}

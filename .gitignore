@@ -10,3 +10,4 @@ build/
 Thumbs.db
 cpp-engine/traffic_engine
 cpp-engine/traffic_engine.exe
+.vscode/
