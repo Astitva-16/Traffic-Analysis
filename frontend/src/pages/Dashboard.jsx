@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { io } from 'socket.io-client';
 import { api } from '../services/api';
 import TrafficMap from '../components/TrafficMap';
@@ -21,8 +21,10 @@ function PlacePicker({ label, value, onChange }) {
     setMessage('');
     try {
       const res = await api.get('/places/search', { params: { q: query.trim() } });
-      setResults(res.data);
-      if (!res.data.length) setMessage('No places found. Try a nearby landmark or full address.');
+      setResults(res.data || []);
+      if (!res.data || !res.data.length) {
+        setMessage('No places found. Try a landmark like "India Gate" or "Connaught Place".');
+      }
     } catch (err) {
       setMessage(err.response?.data?.message || 'Could not search places right now.');
     } finally {
@@ -34,13 +36,27 @@ function PlacePicker({ label, value, onChange }) {
     <div className="picker">
       <label>{label}</label>
       <div className="picker-row">
-        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. India Gate, New Delhi" onKeyDown={e => e.key === 'Enter' && search()} />
-        <button onClick={search} disabled={loading}>{loading ? 'Searching…' : 'Search'}</button>
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="e.g. India Gate, Connaught Place"
+          onKeyDown={e => e.key === 'Enter' && search()}
+        />
+        <button type="button" onClick={search} disabled={loading}>
+          {loading ? 'Searching…' : 'Search'}
+        </button>
       </div>
       {results.length > 0 && (
         <div className="place-results">
           {results.map((place, index) => (
-            <button key={`${place.lat}-${place.lon}-${index}`} onClick={() => { onChange(place); setResults([]); }}>
+            <button
+              type="button"
+              key={`${place.lat}-${place.lon}-${index}`}
+              onClick={() => {
+                onChange(place);
+                setResults([]);
+              }}
+            >
               <strong>{place.shortName}</strong>
               <span>{place.name}</span>
             </button>
@@ -48,7 +64,11 @@ function PlacePicker({ label, value, onChange }) {
         </div>
       )}
       {message && <small className="form-message">{message}</small>}
-      {value && <div className="selected-place">Selected: <b>{value.shortName}</b></div>}
+      {value && (
+        <div className="selected-place">
+          Selected: <b>{value.shortName || value.name}</b>
+        </div>
+      )}
     </div>
   );
 }
@@ -59,6 +79,7 @@ export default function Dashboard() {
   const [bottlenecks, setBottlenecks] = useState([]);
   const [selected, setSelected] = useState(null);
   const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [analysis, setAnalysis] = useState(null);
   const [origin, setOrigin] = useState(null);
   const [destination, setDestination] = useState(null);
@@ -66,44 +87,71 @@ export default function Dashboard() {
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeMessage, setRouteMessage] = useState('');
 
-  async function load() {
-    const [a, b, c] = await Promise.all([
-      api.get('/segments'),
-      api.get('/traffic/summary'),
-      api.get('/traffic/bottlenecks')
-    ]);
-    setSegments(a.data);
-    setSummary(b.data);
-    setBottlenecks(c.data);
-  }
+  const loadData = useCallback(async () => {
+    try {
+      const [segRes, sumRes, botRes] = await Promise.all([
+        api.get('/segments'),
+        api.get('/traffic/summary'),
+        api.get('/traffic/bottlenecks')
+      ]);
+      setSegments(segRes.data || []);
+      setSummary(sumRes.data || {});
+      setBottlenecks(botRes.data || []);
+    } catch (err) {
+      console.warn('Dashboard poll error:', err.message);
+    }
+  }, []);
 
   useEffect(() => {
-    load();
-    const socket = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000');
-    const refresh = setInterval(load, 5000);
+    loadData();
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+    const socket = io(socketUrl, { reconnectionAttempts: 5 });
+
+    const refresh = setInterval(loadData, 4000);
+
     socket.on('traffic:update', event => {
       setSegments(prev => prev.map(x => x.segmentId === event.segmentId ? { ...x, ...event } : x));
     });
-    return () => { socket.close(); clearInterval(refresh); };
-  }, []);
+
+    return () => {
+      socket.disconnect();
+      clearInterval(refresh);
+    };
+  }, [loadData]);
 
   async function selectSegment(segment) {
     if (!segment) return;
     setSelected(segment);
-    const h = await api.get(`/segments/${segment.segmentId}/history`);
-    setHistory(h.data.slice(-30).map(x => ({ time: new Date(x.timestamp).toLocaleTimeString(), speed: x.speed })));
+    setHistoryLoading(true);
     setAnalysis(null);
+    try {
+      const h = await api.get(`/segments/${segment.segmentId}/history`);
+      const readings = (h.data || []).slice(-30).map(x => ({
+        time: new Date(x.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        speed: Number(x.speed)
+      }));
+      setHistory(readings);
+    } catch (err) {
+      console.error('Failed to load segment history:', err);
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
   }
 
   async function analyzeSelected() {
     if (!selected) return;
-    const h = await api.get(`/segments/${selected.segmentId}/query`, { params: { from: 0, to: 29 } });
-    setAnalysis(h.data);
+    try {
+      const h = await api.get(`/segments/${selected.segmentId}/query`, { params: { from: 0, to: 29 } });
+      setAnalysis(h.data);
+    } catch (err) {
+      console.error('Failed to analyze segment:', err);
+    }
   }
 
   async function findRoute() {
     if (!origin || !destination) {
-      setRouteMessage('Search and select both places first.');
+      setRouteMessage('Please search and select both starting place and destination.');
       return;
     }
     setRouteLoading(true);
@@ -113,7 +161,7 @@ export default function Dashboard() {
       setRoute(res.data);
     } catch (err) {
       setRoute(null);
-      setRouteMessage(err.response?.data?.message || 'Could not calculate a route.');
+      setRouteMessage(err.response?.data?.message || 'Could not calculate route. Please try again.');
     } finally {
       setRouteLoading(false);
     }
@@ -123,32 +171,34 @@ export default function Dashboard() {
     <div className="app">
       <header className="topbar">
         <div>
-          <h1>Traffic Monitor</h1>
-          <p>Live road conditions, bottlenecks and route planning</p>
+          <h1>Traffic Analysis &amp; Routing Engine</h1>
+          <p>Real-time road congestion telemetry, C++ algorithmic simulation &amp; intelligent routing</p>
         </div>
         <div className="live"><span /> LIVE</div>
       </header>
 
       <main>
         <section className="stats">
-          <Card title="Road segments" value={summary.segments ?? '—'} />
-          <Card title="Average speed" value={summary.averageSpeed != null ? `${summary.averageSpeed} km/h` : '—'} />
-          <Card title="Congestion" value={summary.averageCongestion != null ? `${summary.averageCongestion}%` : '—'} />
-          <Card title="Active sensors" value={summary.activeSensors ?? '—'} />
+          <Card title="Road Segments" value={summary.segments ?? '—'} />
+          <Card title="Average Speed" value={summary.averageSpeed != null ? `${summary.averageSpeed} km/h` : '—'} />
+          <Card title="Congestion Level" value={summary.averageCongestion != null ? `${summary.averageCongestion}%` : '—'} />
+          <Card title="Active Sensors" value={summary.activeSensors ?? '—'} />
         </section>
 
         <section className="panel planner">
           <div className="section-heading">
             <div>
-              <h2>Plan a route</h2>
-              <p>Search for real places and compare the best driving route using current road conditions.</p>
+              <h2>Intelligent Route Planner</h2>
+              <p>Search origin and destination places to find the optimal route factored by live congestion data.</p>
             </div>
           </div>
           <div className="planner-grid">
-            <PlacePicker label="From" value={origin} onChange={setOrigin} />
-            <PlacePicker label="To" value={destination} onChange={setDestination} />
+            <PlacePicker label="Origin" value={origin} onChange={setOrigin} />
+            <PlacePicker label="Destination" value={destination} onChange={setDestination} />
             <div className="route-action">
-              <button className="primary" onClick={findRoute} disabled={routeLoading}>{routeLoading ? 'Calculating…' : 'Find best route'}</button>
+              <button type="button" className="primary" onClick={findRoute} disabled={routeLoading}>
+                {routeLoading ? 'Calculating…' : 'Find Best Route'}
+              </button>
               {routeMessage && <small className="form-message">{routeMessage}</small>}
             </div>
           </div>
@@ -157,53 +207,131 @@ export default function Dashboard() {
         <section className="grid main-grid">
           <div className="panel map-panel">
             <div className="panel-title">
-              <div><h2>Live traffic map</h2><p>Green: clear · Amber: slow · Red: congested · Blue: selected route</p></div>
+              <div>
+                <h2>Live Telemetry Map</h2>
+                <p>Green: Clear (&lt;40%) · Amber: Moderate (40-70%) · Red: Congested (&gt;70%) · Blue: Route</p>
+              </div>
             </div>
-            <div className="mapbox"><TrafficMap segments={segments} routeGeometry={route?.geometry || []} origin={route?.origin || origin} destination={route?.destination || destination} /></div>
+            <div className="mapbox">
+              <TrafficMap
+                segments={segments}
+                routeGeometry={route?.geometry || []}
+                origin={route?.origin || origin}
+                destination={route?.destination || destination}
+              />
+            </div>
           </div>
 
           <div className="panel">
-            <div className="panel-title"><div><h2>Traffic hotspots</h2><p>Roads with the highest current congestion</p></div></div>
+            <div className="panel-title">
+              <div>
+                <h2>Traffic Hotspots (Heap Top 5)</h2>
+                <p>Road segments ranked by highest congestion index</p>
+              </div>
+            </div>
             <div className="bottleneck-list">
-              {bottlenecks.map((b, i) => (
-                <button className="bottleneck" key={b.segmentId} onClick={() => selectSegment(segments.find(s => s.segmentId === b.segmentId))}>
-                  <div><span className="rank">#{i + 1}</span> {b.name}</div>
-                  <strong>{Math.round(b.score)}%</strong>
-                  <small>{Number(b.speed).toFixed(1)} km/h · {Math.round(b.occupancy)}% occupancy</small>
-                </button>
-              ))}
+              {bottlenecks.length > 0 ? (
+                bottlenecks.map((b, i) => {
+                  const seg = segments.find(s => s.segmentId === b.segmentId) || {
+                    segmentId: b.segmentId,
+                    name: b.name,
+                    currentSpeed: b.speed,
+                    congestion: b.score,
+                    occupancy: b.occupancy,
+                    volume: b.volume
+                  };
+                  return (
+                    <button
+                      type="button"
+                      className="bottleneck"
+                      key={b.segmentId || i}
+                      onClick={() => selectSegment(seg)}
+                    >
+                      <div><span className="rank">#{i + 1}</span> {b.name}</div>
+                      <strong>{Math.round(b.score)}%</strong>
+                      <small>{Number(b.speed).toFixed(1)} km/h · {Math.round(b.occupancy)}% occupancy</small>
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="empty">No hotspots detected.</div>
+              )}
             </div>
           </div>
         </section>
 
         <section className="grid lower-grid">
           <div className="panel">
-            <div className="panel-title"><div><h2>Speed history</h2><p>{selected ? selected.name : 'Select a road above to inspect its recent readings'}</p></div></div>
+            <div className="panel-title">
+              <div>
+                <h2>Segment History &amp; Range Query</h2>
+                <p>{selected ? `${selected.name} (${selected.segmentId})` : 'Click any hotspot above to inspect telemetry history'}</p>
+              </div>
+            </div>
             {selected ? (
               <>
-                <div className="chart"><ResponsiveContainer><LineChart data={history}><XAxis dataKey="time" minTickGap={35} /><YAxis domain={['auto', 'auto']} /><Tooltip /><Line type="monotone" dataKey="speed" stroke="#1d4ed8" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer></div>
-                <button className="secondary" onClick={analyzeSelected}>Analyze recent readings</button>
-                {analysis && <div className="analysis-grid"><Stat label="Average" value={`${analysis.average} km/h`} /><Stat label="Minimum" value={`${analysis.min} km/h`} /><Stat label="Maximum" value={`${analysis.max} km/h`} /><Stat label="Readings" value={analysis.count} /></div>}
+                <div className="chart">
+                  {history.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={history} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
+                        <XAxis dataKey="time" minTickGap={35} tick={{ fontSize: 12 }} />
+                        <YAxis domain={['auto', 'auto']} tick={{ fontSize: 12 }} unit=" km/h" />
+                        <Tooltip />
+                        <Line type="monotone" dataKey="speed" stroke="#1d4ed8" strokeWidth={2.5} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="empty">{historyLoading ? 'Loading history…' : 'No history points yet.'}</div>
+                  )}
+                </div>
+                <button type="button" className="secondary" onClick={analyzeSelected}>
+                  Analyze via C++ Segment Tree
+                </button>
+                {analysis && (
+                  <div className="analysis-grid">
+                    <Stat label="Average Speed" value={`${analysis.average} km/h`} />
+                    <Stat label="Min Speed" value={`${analysis.min} km/h`} />
+                    <Stat label="Max Speed" value={`${analysis.max} km/h`} />
+                    <Stat label="Samples Count" value={analysis.count} />
+                  </div>
+                )}
               </>
-            ) : <div className="empty">Click a traffic hotspot to view its history.</div>}
+            ) : (
+              <div className="empty">Select a road segment above to visualize speed trends.</div>
+            )}
           </div>
 
           <div className="panel route-panel">
-            <div className="panel-title"><div><h2>Route result</h2><p>{route ? `${route.distanceKm.toFixed(1)} km · live estimate` : 'Your selected route will appear here'}</p></div></div>
+            <div className="panel-title">
+              <div>
+                <h2>Route Selection Result</h2>
+                <p>{route ? `${route.distanceKm.toFixed(1)} km · live congestion estimated` : 'Calculated route information will appear here'}</p>
+              </div>
+            </div>
             {route ? (
               <>
                 <div className="route-result">
-                  <span className="route-label">Recommended</span>
-                  <b>{route.origin.shortName} → {route.destination.shortName}</b>
+                  <span className="route-label">Recommended Route</span>
+                  <b>{route.origin.shortName || route.origin.name} → {route.destination.shortName || route.destination.name}</b>
                   <strong>{route.estimatedMinutes} min</strong>
-                  <small>Estimated from current road conditions and live traffic activity.</small>
+                  <small>Optimized by Dijkstra pathfinder factoring live speed degradation.</small>
                 </div>
-                <div className="alternatives">
-                  <h3>Available options</h3>
-                  {route.candidates.map(c => <div className="option" key={c.id}><span>Option {c.rank}</span><b>{c.baseMinutes} min</b><small>{c.distanceKm} km</small></div>)}
-                </div>
+                {route.candidates && route.candidates.length > 0 && (
+                  <div className="alternatives">
+                    <h3>Evaluated Options</h3>
+                    {route.candidates.map(c => (
+                      <div className="option" key={c.id}>
+                        <span>Option #{c.rank}</span>
+                        <b>{c.baseMinutes} min base</b>
+                        <small>{c.distanceKm} km</small>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
-            ) : <div className="empty">Search two places and calculate a route.</div>}
+            ) : (
+              <div className="empty">Search places above to calculate route recommendations.</div>
+            )}
           </div>
         </section>
       </main>
@@ -211,5 +339,20 @@ export default function Dashboard() {
   );
 }
 
-function Card({ title, value }) { return <div className="card"><span>{title}</span><b>{value}</b></div>; }
-function Stat({ label, value }) { return <div><span>{label}</span><b>{value}</b></div>; }
+function Card({ title, value }) {
+  return (
+    <div className="card">
+      <span>{title}</span>
+      <b>{value}</b>
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <b>{value}</b>
+    </div>
+  );
+}
