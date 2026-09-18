@@ -7,21 +7,21 @@ function FitRoute({ route }) {
   useEffect(() => {
     if (route && Array.isArray(route) && route.length >= 2) {
       try {
-        map.fitBounds(route, { padding: [35, 35] });
+        map.fitBounds(route, { padding: [40, 40] });
       } catch (e) {
-        console.warn('Map fitBounds failed:', e);
+        console.warn('Map fitBounds error:', e);
       }
     }
   }, [route, map]);
   return null;
 }
 
-export default function TrafficMap({ segments = [], routeGeometry = [], origin, destination }) {
-  const route = routeGeometry || [];
-  const validSegments = Array.isArray(segments) ? segments.filter(s => s && s.geometry && s.geometry.length > 0) : [];
+export default function TrafficMap({ routes = [], selectedRoute = null, onSelectRoute, origin, destination }) {
+  const activeRoute = selectedRoute || (routes.length ? routes[0] : null);
+  const activeGeometry = activeRoute?.geometry || [];
 
-  const fitBoundsCoordinates = route.length > 1
-    ? route
+  const fitCoordinates = activeGeometry.length > 1
+    ? activeGeometry
     : (origin?.lat && destination?.lat ? [[origin.lat, origin.lon], [destination.lat, destination.lon]] : []);
 
   return (
@@ -30,33 +30,67 @@ export default function TrafficMap({ segments = [], routeGeometry = [], origin, 
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
       />
-      {validSegments.map(s => {
-        const congestion = s.congestion ?? 0;
-        const color = congestion > 70 ? '#c62828' : congestion > 40 ? '#d97706' : '#2e7d32';
+
+      {/* Alternative routes */}
+      {routes.map(r => {
+        const isSelected = activeRoute && activeRoute.id === r.id;
+        if (isSelected || !r.geometry || r.geometry.length < 2) return null;
         return (
-          <Polyline key={s.segmentId} positions={s.geometry} pathOptions={{ color, weight: 7, opacity: 0.85 }}>
+          <Polyline
+            key={r.id}
+            positions={r.geometry}
+            pathOptions={{ color: '#94a3b8', weight: 5, opacity: 0.65, dashArray: '6, 8' }}
+            eventHandlers={{
+              click: () => onSelectRoute && onSelectRoute(r)
+            }}
+          >
             <Popup>
-              <b>{s.name}</b><br />
-              Current speed: {s.currentSpeed != null ? Number(s.currentSpeed).toFixed(1) : '—'} km/h<br />
-              Congestion: {Math.round(congestion)}%<br />
-              Occupancy: {s.occupancy != null ? Math.round(s.occupancy) : '—'}%<br />
-              Volume: {s.volume != null ? s.volume : '—'} veh/hr
+              <b>Option #{r.rank}: {r.name}</b><br />
+              Est. Time: {r.estimatedMinutes} min<br />
+              Distance: {r.distanceKm} km<br />
+              <button
+                type="button"
+                style={{ marginTop: 6, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
+                onClick={() => onSelectRoute && onSelectRoute(r)}
+              >
+                Select this route
+              </button>
             </Popup>
           </Polyline>
         );
       })}
-      {route.length > 1 && <Polyline positions={route} pathOptions={{ color: '#1d4ed8', weight: 8, opacity: 0.9 }} />}
+
+      {/* Selected active route */}
+      {activeGeometry.length > 1 && (
+        <Polyline
+          key={`active-${activeRoute?.id}`}
+          positions={activeGeometry}
+          pathOptions={{ color: '#2563eb', weight: 8, opacity: 0.95 }}
+        >
+          <Popup>
+            <b>Selected: #{activeRoute?.rank} {activeRoute?.name}</b><br />
+            Est. Time: {activeRoute?.estimatedMinutes} min<br />
+            Distance: {activeRoute?.distanceKm} km<br />
+            Avg Congestion: {activeRoute?.congestion}%
+          </Popup>
+        </Polyline>
+      )}
+
+      {/* Origin marker */}
       {origin && origin.lat != null && (
-        <CircleMarker center={[origin.lat, origin.lon]} radius={9} pathOptions={{ color: '#166534', fillOpacity: 1 }}>
-          <Popup><b>Start:</b><br />{origin.shortName || origin.name}</Popup>
+        <CircleMarker center={[origin.lat, origin.lon]} radius={10} pathOptions={{ color: '#16a34a', fillColor: '#22c55e', fillOpacity: 1 }}>
+          <Popup><b>Start Origin:</b><br />{origin.shortName || origin.name}</Popup>
         </CircleMarker>
       )}
+
+      {/* Destination marker */}
       {destination && destination.lat != null && (
-        <CircleMarker center={[destination.lat, destination.lon]} radius={9} pathOptions={{ color: '#991b1b', fillOpacity: 1 }}>
+        <CircleMarker center={[destination.lat, destination.lon]} radius={10} pathOptions={{ color: '#dc2626', fillColor: '#ef4444', fillOpacity: 1 }}>
           <Popup><b>Destination:</b><br />{destination.shortName || destination.name}</Popup>
         </CircleMarker>
       )}
-      <FitRoute route={fitBoundsCoordinates} />
+
+      <FitRoute route={fitCoordinates} />
     </MapContainer>
   );
 }

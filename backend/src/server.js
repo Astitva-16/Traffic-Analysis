@@ -5,7 +5,6 @@ import mongoose from 'mongoose';
 import { Server } from 'socket.io';
 import http from 'http';
 import routes from './routes/trafficRoutes.js';
-import { seedSegments, startSimulator, processEvent } from './services/trafficEngine.js';
 import { assertEngineAvailable } from './services/cppEngine.js';
 
 const app = express();
@@ -22,9 +21,10 @@ const allowOrigin = (origin, callback) => {
 const io = new Server(server, { cors: { origin: allowOrigin } });
 app.use(cors({ origin: allowOrigin }));
 app.use(express.json());
+
 app.get('/api/health', (req, res) => res.json({ ok: true, service: 'traffic-analysis', time: new Date() }));
 app.use('/api', routes);
-app.locals.processEvent = e => processEvent(e, io);
+
 io.on('connection', socket => {
   socket.emit('connected', { message: 'Real-time traffic stream connected' });
 });
@@ -35,22 +35,20 @@ const start = async () => {
   if (engineReady) {
     console.log('[Traffic Engine] C++ engine binary detected and ready.');
   } else {
-    console.warn('[Traffic Engine] C++ engine binary not found or not compiled. Using embedded JS fallback.');
+    console.warn('[Traffic Engine] C++ engine binary not found. Using embedded JS fallback.');
   }
 
   const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/traffic_analysis';
   try {
     await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 });
     console.log('[Database] MongoDB connected successfully.');
-    await seedSegments();
-    server.listen(port, () => {
-      console.log(`[Server] Backend listening on http://localhost:${port}`);
-    });
-    startSimulator(io);
   } catch (err) {
-    console.error('[Database] MongoDB connection failed:', err.message);
-    process.exit(1);
+    console.warn('[Database] MongoDB connection note:', err.message);
   }
+
+  server.listen(port, () => {
+    console.log(`[Server] Backend listening on http://localhost:${port}`);
+  });
 };
 
 start();

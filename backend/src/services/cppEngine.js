@@ -47,7 +47,6 @@ export async function cppRange(values, from, to) {
     const content = `${values.length} ${from} ${to}\n${values.join(' ')}\n`;
     return await run('range', content);
   } catch (err) {
-    // JS Fallback
     const subset = values.slice(Math.max(0, from), Math.min(values.length, to + 1));
     if (!subset.length) return { ok: true, count: 0, average: 0, min: 0, max: 0 };
     const sum = subset.reduce((a, b) => a + b, 0);
@@ -61,78 +60,36 @@ export async function cppRange(values, from, to) {
   }
 }
 
-export async function cppBottlenecks(rows) {
+export async function cppRankRoutes(routes) {
   try {
-    const lines = [String(rows.length)];
-    for (const r of rows) {
-      lines.push([r.segmentId, String(r.name).replaceAll('|', '/'), r.score, r.speed, r.occupancy, r.volume].join('|'));
+    const lines = [String(routes.length)];
+    for (const r of routes) {
+      lines.push([
+        r.id,
+        String(r.name).replaceAll('|', '/'),
+        r.estimatedMinutes,
+        r.distanceKm,
+        r.congestion
+      ].join('|'));
     }
-    return await run('bottlenecks', lines.join('\n') + '\n');
+    const ranked = await run('rank-routes', lines.join('\n') + '\n');
+    if (Array.isArray(ranked) && ranked.length > 0) {
+      return ranked.map(rk => {
+        const orig = routes.find(r => r.id === rk.id) || {};
+        return { ...orig, ...rk };
+      });
+    }
   } catch (err) {
-    // JS Fallback
-    return rows
-      .sort((a, b) => (b.score || 0) - (a.score || 0))
-      .slice(0, 5)
-      .map(r => ({
-        segmentId: r.segmentId,
-        name: r.name,
-        score: Number((r.score || 0).toFixed(1)),
-        speed: Number((r.speed || 0).toFixed(1)),
-        occupancy: Number((r.occupancy || 0).toFixed(1)),
-        volume: Number(r.volume || 0)
-      }));
+    console.warn('[C++ Engine] cppRankRoutes fallback used:', err.message);
   }
-}
 
-export async function cppCandidateRoute(baseMinutes, trafficAverage) {
-  try {
-    const content = `${baseMinutes.length} ${trafficAverage}\n${baseMinutes.join(' ')}\n`;
-    return await run('candidate-route', content);
-  } catch (err) {
-    // JS Fallback
-    const factor = 1.0 + Math.min(0.35, Math.max(0, trafficAverage) / 300.0);
-    const weighted = baseMinutes.map((b, i) => b * factor * (1.0 + i * 0.025));
-    let minIdx = 0;
-    for (let i = 1; i < weighted.length; i++) {
-      if (weighted[i] < weighted[minIdx]) minIdx = i;
-    }
-    return {
-      ok: true,
-      minutes: Number(weighted[minIdx].toFixed(2)),
-      selectedIndex: minIdx,
-      trafficFactor: Number(factor.toFixed(2))
-    };
-  }
-}
-
-export async function cppSimulate(segments) {
-  try {
-    const lines = [String(segments.length)];
-    for (const s of segments) {
-      lines.push([s.segmentId, s.name.replaceAll('|', '/'), s.speedLimit, s.capacity, Number(s.segmentId.replace(/\D/g, '') || 1)].join('|'));
-    }
-    return await run('simulate', lines.join('\n') + '\n');
-  } catch (err) {
-    // JS Fallback
-    const t = Date.now() / 1000;
-    return segments.map(s => {
-      const seed = Number(s.segmentId.replace(/\D/g, '') || 1);
-      const pressure = 0.35 + 0.45 * Math.abs(Math.sin(t / 45.0 + seed));
-      const noise = (Math.random() - 0.5) * 10;
-      const speed = Math.max(8.0, Math.min(s.speedLimit, s.speedLimit * (1.0 - pressure * 0.72) + noise));
-      const volume = Math.round(s.capacity * (0.35 + pressure * 0.8));
-      const occupancy = Math.min(100, Math.round((volume / s.capacity) * 100 + Math.random() * 8));
-      const congestion = Math.round(Math.max(0, Math.min(100, (1.0 - speed / s.speedLimit) * 70.0 + (occupancy / 100.0) * 30.0)));
-      return {
-        segmentId: s.segmentId,
-        name: s.name,
-        speed: Number(speed.toFixed(1)),
-        volume,
-        occupancy,
-        congestion
-      };
-    });
-  }
+  return [...routes]
+    .sort((a, b) => {
+      const scoreA = a.estimatedMinutes * (1.0 + a.congestion / 200.0);
+      const scoreB = b.estimatedMinutes * (1.0 + b.congestion / 200.0);
+      return scoreA - scoreB;
+    })
+    .map((r, i) => ({ ...r, rank: i + 1 }));
 }
 
 export async function assertEngineAvailable() {
