@@ -62,9 +62,14 @@ The project has three main parts:
 ## Project Structure
 
 ``` text
-project/
+traffic-analysis/
 │
 ├── backend/
+│   ├── cpp-engine/
+│   │   ├── main.cpp
+│   │   ├── build.bat
+│   │   └── traffic_engine.exe
+│   │
 │   ├── src/
 │   │   ├── controllers/
 │   │   │   └── trafficController.js
@@ -84,13 +89,9 @@ project/
 │   │   └── server.js
 │   │
 │   ├── .env
+│   ├── build.sh
 │   ├── package.json
 │   └── package-lock.json
-│
-├── cpp-engine/
-│   ├── main.cpp
-│   ├── build.bat
-│   └── traffic_engine.exe
 │
 ├── frontend/
 │   ├── src/
@@ -112,7 +113,6 @@ project/
 │   ├── package.json
 │   └── vite.config.js
 │
-├── docs/
 ├── .gitignore
 └── README.md
 ```
