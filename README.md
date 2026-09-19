@@ -221,11 +221,93 @@ Mongoose is used in the backend to communicate with MongoDB.
 
 The backend calls the C++ engine whenever traffic calculations are
 required.
-
-The C++ part handles the calculation work instead of putting those
-calculations directly inside the React frontend.
-
 The C++ engine is used for:
+------------------------------------------------------------------------
+
+# Algorithms Used
+
+The project uses different data structures for different traffic
+operations. Each one is selected according to the type of query it must
+answer.
+
+## 1. Segment Tree - Speed Range Statistics
+
+**Location:** `backend/cpp-engine/main.cpp`, `SegmentTree`
+
+The segment tree stores speed values and returns the following statistics
+for any requested range of road segments:
+
+-   Number of readings
+-   Average speed
+-   Minimum speed
+-   Maximum speed
+
+**Why this algorithm?** Speed history is queried for selected ranges, not
+always for the complete array. A segment tree combines the sum, minimum,
+and maximum of smaller ranges, so repeated range queries are faster than
+scanning every speed value each time.
+
+**Use case:** The frontend can request speed statistics for a selected
+part of a route or a selected portion of speed history.
+
+**Complexity:** Building the tree takes `O(n)` time and a range query
+takes `O(log n)` time, with `O(n)` extra memory.
+
+## 2. Min-Heap - Route Ranking
+
+**Location:** `backend/cpp-engine/main.cpp`, `RouteMinHeap`
+
+Every candidate route receives a traffic-aware score:
+
+``` text
+score = estimatedMinutes * (1 + congestion / 200)
+```
+
+The min-heap keeps the route with the lowest score at the top. Routes are
+then removed from the heap in increasing score order and assigned ranks.
+
+**Why this algorithm?** The best route should consider both travel time
+and congestion. A min-heap gives quick access to the currently best route
+without requiring a separate full comparison step for every selection.
+
+**Use case:** When the user selects an origin and destination, the backend
+gets route candidates, ranks them using current congestion, and returns
+the best route first.
+
+**Complexity:** Inserting `n` routes takes `O(n log n)` with the current
+implementation, and removing all ranked routes takes `O(n log n)` time.
+The heap uses `O(n)` memory.
+
+## 3. Max-Heap - Traffic Bottlenecks
+
+**Location:** `backend/cpp-engine/main.cpp`, `MaxHeap`
+
+The max-heap keeps the segment with the highest traffic score at the top.
+It can return the most critical segments first, which is useful for
+showing the top five bottlenecks on the dashboard.
+
+**Why this algorithm?** Traffic monitoring usually needs the worst few
+segments, rather than a complete sorted list of every segment. A max-heap
+supports repeated access to the highest-priority bottleneck efficiently.
+
+**Use case:** Identify road segments with severe congestion, low speed,
+high occupancy, or high traffic volume so that they can be highlighted on
+the map and dashboard.
+
+**Complexity:** Inserting `n` segments takes `O(n log n)`. Returning the
+top `k` bottlenecks takes `O(k log n)`, and the heap uses `O(n)` memory.
+
+## 4. Traffic-Aware Scoring
+
+Route ranking uses a weighted scoring formula instead of choosing only
+the shortest distance or the lowest travel time. Congestion increases the
+effective cost of a route, so a slightly longer route can be ranked first
+when it has significantly less traffic.
+
+This makes the route result more useful for real-world navigation, where
+the fastest route under current traffic is usually more valuable than the
+geometrically shortest route.
+
 
 -   Traffic simulation
 -   Traffic range calculations
